@@ -1,3 +1,4 @@
 data/
 p2_env/
 **/.DS_Store
+__pycache__/

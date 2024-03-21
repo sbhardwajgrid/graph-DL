@@ -5,6 +5,7 @@ import torch
 import os
 import matplotlib.pyplot as plt
 import node2vec
+import random as rd
 
 import sys
 sys.path.append('/Users/sbhardwaj/Documents/GraphNodeClassification')
@@ -23,17 +24,19 @@ class DBLP_dataset(Dataset):
     output: creates processed dataset (data_0.pt) at "root/processed"
     """
 
-    def __init__(self, root, raw_filenames , processed_filenames , expt = "edge_sampling" , edge_sampling = [1] , n_communities = [50 , 100 , 200 , 500] , transform=None, pre_transform=None):
+    def __init__(self, root, raw_filenames , processed_filename , embedding_dim=16 , retain_edges = 0.5 , n_communities = 200 , transform=None, pre_transform=None):
         """
             root = Where the dataset should be stored. This folder is split
-            into "raw" directory (downloaded dataset) and "processed" directory (processed data). 
+            into "raw" directory (downloaded dataset) and "processed" directory (processed data)
         """
         self.raw_filenames = raw_filenames
-        self.processed_filenames = processed_filenames
-        self.edge_sampling = edge_sampling
-        self.n_communities = n_communities
+        self.processed_filename = processed_filename
         self.root = root
-        self.expt = expt
+
+
+        self.retain_edges = retain_edges
+        self.n_communities = n_communities
+        self.embedding_dim = embedding_dim
 
         super(DBLP_dataset , self).__init__(root, transform, pre_transform)
 
@@ -57,7 +60,7 @@ class DBLP_dataset(Dataset):
             If these files are found in "processed" directory, processing is skipped
         """
         
-        return self.processed_filenames
+        return self.processed_filename
 
     def download(self):
         """
@@ -70,10 +73,9 @@ class DBLP_dataset(Dataset):
         """
             input: raw data files at "root/raw/*"
             description: processes raw datafiles for model use
-            output: torch_geomteric.Data object saved as "data_0.pt" in "root/processed"
+            output: torch_geomteric.Data object saved as self.processed_filename in "root/processed"
         """
-        
-        # node_list, edge_list, labels contain all nodes and edges
+
         node_list , edge_list = self.node_edge_list_from_txt_file(self.raw_paths[0])    # self.raw_paths[0] = "root/raw/self.raw_filenames[0]" = "root/raw/graph_edges.txt"
 
         h = nx.Graph()      # create nx graph for the dataset
@@ -82,125 +84,45 @@ class DBLP_dataset(Dataset):
 
         f = self.get_frequencies()      # used for sampling value:count ("count" number of communities with "value" number of members)
 
-        if(self.expt == "n_communities"):
+        sampled_node_list = self.community_sampling(frequencies_file=f , k=self.n_communities//20 , n_communities=self.n_communities)        # subset of nodes that are a part of the sampled communities
+        embedding_ids = [str(i) for i in range(sampled_node_list.shape[0])]
 
-            for idx , n_community in enumerate(self.n_communities):
+        # labels[i,j] = 1 if node i is a member of community j else 0
+        labels = self.binary_encoded_communities_from_txt_file(os.path.abspath("..") + "/data/interim/modified_communities.txt" , node_list)     # self.raw_paths[1] = "root/raw/self.raw_filenames[1]" = "root/raw/5000_communities.txt"
 
-                sampled_node_list = self.community_sampling(frequencies_file=f , k=n_community//20 , n_communities=n_community)        # sorted subset of nodes that are a part of the sampled communities
-                embedding_ids = [str(node) for node in sampled_node_list]
-                embs = torch.tensor(n2v_embeddings[embedding_ids] , dtype = torch.float32)
+        labels = torch.tensor(labels[sampled_node_list , :] , dtype=torch.float32)
 
-                # labels[i,j] = 1 if node i is a member of community j else 0
-                labels = self.binary_encoded_communities_from_txt_file(os.path.abspath("..") + "/data/interim/modified_communities.txt" , node_list)     # self.raw_paths[1] = "root/raw/self.raw_filenames[1]" = "root/raw/5000_communities.txt"
+        # Dict to relabel nodes
+        mapping = dict(zip(sampled_node_list , np.arange(0 , sampled_node_list.shape[0] , 1)))
 
-                labels = torch.tensor(labels[sampled_node_list , :] , dtype=torch.float32)
+        g = nx.Graph(h.subgraph(sampled_node_list).copy())      # subsample the selected nodes
+        nx.relabel_nodes(g , mapping = mapping , copy=False)    # relabel nodes (due to model convention)
 
-                mapping = dict(zip(sampled_node_list , np.arange(0 , sampled_node_list.shape[0] , 1)))
+        edge_sampler = np.random.rand(1 , len(list(g.edges)))
+        g.remove_edges_from((np.array(list(g.edges))[(edge_sampler< (1-self.retain_edges) )[0,:]]))
 
-                g = nx.Graph(h.subgraph(sampled_node_list).copy())      # subsample the selected nodes
-                nx.relabel_nodes(g , mapping = mapping , copy=False)    # relabel nodes (due to model convention)
+        # Compute embeddings on edge_sampled graph
+        n2v_embeddings = self.n2v_embeddings(g , embedding_dim=self.embedding_dim)      # get Node2Vec embeddings for all nodes
+        embs = torch.tensor(n2v_embeddings[embedding_ids] , dtype = torch.float32)
 
-                edge_sampler = np.random.rand(1 , len(list(g.edges)))
-                g.remove_edges_from((np.array(list(g.edges))[(edge_sampler<0.25)[0,:]]))
-                
-                features , g = self.get_feature_vector(g)     # get features for all nodes in subsampled graph
-                features = torch.nn.functional.normalize(torch.tensor(feature_vector , dtype=torch.float32) , dim=0)
-                feature_vector = torch.cat([embs , features] , dim=1)
+        features , g = self.get_feature_vector(g)     # get statistical features for all nodes in subsampled graph
+        features = torch.nn.functional.normalize(torch.tensor(features , dtype=torch.float32) , dim=0)
 
-                edge_index = np.array(g.edges)
-                edge_index_ = np.flip(edge_index , axis=1)
-                self_loops = np.array([[i,i] for i in g.nodes])
-                edge_index = np.concatenate([edge_index , edge_index_ , self_loops] , axis=0)
-                edge_index = torch.tensor(edge_index.T , dtype=torch.int32)
-            
-                data = Data(x=feature_vector , edge_index=edge_index , y=labels , dtype=torch.float32 , g=g)
-                add_masks = RandomNodeSplit(split = "train_rest" , num_val=len(g.nodes)//10 , num_test=len(g.nodes)//10)
-                data = add_masks(data)
+        feature_vector = torch.cat([embs , features] , dim=1)       # form feature vector by concatenating embeddings and statistical features
 
-                torch.save(data, os.path.join(self.processed_dir, f"data_nc_{idx}.pt") , pickle_protocol=4)
+        # create edge_index (adjacency list)
+        edge_index = np.array(g.edges)
+        edge_index_ = np.flip(edge_index , axis=1)      # model expects directed edges so we make the edge list symmetrical
+        self_loops = np.array([[i,i] for i in g.nodes])     # adding self loops
+        edge_index = np.concatenate([edge_index , edge_index_ , self_loops] , axis=0)
+        edge_index = torch.tensor(edge_index.T , dtype=torch.int32)
 
-        elif(self.expt == "edge_sampling"):
+        data = Data(x=feature_vector , edge_index=edge_index , y=labels , dtype=torch.float32 , g=g)
+        add_masks = RandomNodeSplit(split = "train_rest" , num_val=len(g.nodes)//10 , num_test=len(g.nodes)//10)
+        data = add_masks(data)
 
-            n_community = 200
-            sampled_node_list = self.community_sampling(frequencies_file=f , k=n_community//20 , n_communities=n_community)        # subset of nodes that are a part of the sampled communities
-            embedding_ids = [str(i) for i in range(sampled_node_list.shape[0])]
-
-            # labels[i,j] = 1 if node i is a member of community j else 0
-            labels = self.binary_encoded_communities_from_txt_file(os.path.abspath("..") + "/data/interim/modified_communities.txt" , node_list)     # self.raw_paths[1] = "root/raw/self.raw_filenames[1]" = "root/raw/5000_communities.txt"
-
-            labels = torch.tensor(labels[sampled_node_list , :] , dtype=torch.float32)
-            mapping = dict(zip(sampled_node_list , np.arange(0 , sampled_node_list.shape[0] , 1)))
-
-            g = nx.Graph(h.subgraph(sampled_node_list).copy())      # subsample the selected nodes
-            nx.relabel_nodes(g , mapping = mapping , copy=False)    # relabel nodes (due to model convention)
-            n2v_embeddings = self.n2v_embeddings(g)      # get Node2Vec embeddings for all nodes
-            embs = torch.tensor(n2v_embeddings[embedding_ids] , dtype = torch.float32)
-
-
-            for idx , sample_threshold in enumerate(self.edge_sampling):
-                
-                edge_sampler = np.random.rand(1 , len(list(g.edges)))
-                g.remove_edges_from((np.array(list(g.edges))[(edge_sampler<0.5)[0,:]]))
-                
-                features , g = self.get_feature_vector(g)     # get feature vector for all nodes in subsampled graph
-                features = torch.nn.functional.normalize(torch.tensor(features , dtype=torch.float32) , dim=0)
-                feature_vector = torch.cat([embs , features] , dim=1)
-
-                edge_index = np.array(g.edges)
-                edge_index_ = np.flip(edge_index , axis=1)
-                self_loops = np.array([[i,i] for i in g.nodes])
-                edge_index = np.concatenate([edge_index , edge_index_ , self_loops] , axis=0)
-                edge_index = torch.tensor(edge_index.T , dtype=torch.int32)
-            
-                data = Data(x=feature_vector , edge_index=edge_index , y=labels , dtype=torch.float32 , g=g)
-                add_masks = RandomNodeSplit(split = "train_rest" , num_val=len(g.nodes)//10 , num_test=len(g.nodes)//10)
-                data = add_masks(data)
-
-                torch.save(data, os.path.join(self.processed_dir, f"data_es_{idx}.pt") , pickle_protocol=4)
-
-
-
-        # sampled_node_list = self.community_sampling(frequencies_file=f , k=5 , n_communities=100)        # subset of nodes that are a part of the sampled communities
-        # # labels[i,j] = 1 if node i is a member of community j else 0
-        # labels = self.binary_encoded_communities_from_txt_file(os.path.abspath("..") + "/data/interim/modified_communities.txt" , node_list)     # self.raw_paths[1] = "root/raw/self.raw_filenames[1]" = "root/raw/5000_communities.txt"
-
-        # labels = torch.tensor(labels[sampled_node_list , :] , dtype=torch.float32)
-
-        # mapping = dict(zip(sampled_node_list , np.arange(0 , sampled_node_list.shape[0] , 1)))
-
-        # g = nx.Graph()      # create nx graph for the dataset
-        # g.add_nodes_from(node_list)     # add all nodes
-        # g.add_edges_from(edge_list)     # add all edges
-
-        # g = nx.Graph(g.subgraph(sampled_node_list).copy())      # subsample the selected nodes
-        # nx.relabel_nodes(g , mapping = mapping , copy=False)    # relabel nodes (due to model convention)
-        
-        # feature_vector = np.zeros((len(g.nodes) , num_feats))       # initialise the feature vector
-
-        # feature_vector , g = self.get_feature_vector(g)     # get feature vector for all nodes in subsampled graph
-        # feature_vector = torch.nn.functional.normalize(torch.tensor(feature_vector , dtype=torch.float32) , dim=0)
-
-        # edge_index = np.array([e for e in g.edges])
-        # edge_index_ = np.flip(edge_index , axis=1)
-        # self_loops = np.array([[i,i] for i in g.nodes])
-        # edge_index = np.concatenate([edge_index , edge_index_ , self_loops] , axis=0)
-        # edge_index = torch.tensor(edge_index.T , dtype=torch.int32)
-    
-        # data = Data(x=feature_vector , edge_index=edge_index , y=labels , dtype=torch.float32 , g=g)
-        # add_masks = RandomNodeSplit(split = "train_rest" , num_val=1000 , num_test=1000)
-        # data = add_masks(data)
-        # edge_sampler = np.random.rand(1 , data.edge_index.shape[1])
-
-        # if (self.expt == "edge_sampling"):
-
-        #     for idx , sample_threshold in enumerate(self.edge_sampling):
-
-                
-        #         data.edge_index = edge_index[: , (edge_sampler<sample_threshold)[0 , :]]
-        #         torch.save(data, os.path.join(self.processed_dir, f"data_es_{idx}.pt") , pickle_protocol=4)
-
-        # if(self.expt == "n_communities"):
-        #     pass
+        processed_file_path = os.path.join(self.processed_dir, self.processed_filename)
+        torch.save(data, processed_file_path , pickle_protocol=4)
 
             
     def node_edge_list_from_txt_file(self , file_path: str):
@@ -268,7 +190,6 @@ class DBLP_dataset(Dataset):
         
         return encoded_comms
     
-    
 
     def get_feature_vector(self , g):
         """
@@ -276,18 +197,18 @@ class DBLP_dataset(Dataset):
             description: 
             takes in nx graph g, 
             calculates "n_features" stats for each node,
-            updates the feature values in g and appends it to the feature vector
-            output: (feature_vector: Pytorch tensor of shape (len(g.nodes) , n_features)) , g: nx graph with added node features)
+            updates the feature values in g and appends it to the features
+            output: (features: Pytorch tensor of shape (len(g.nodes) , n_features)) , g: nx graph with added node features)
         """
 
-        feature_vector = np.ones((len(g.nodes) , 1))        # initialise the feature vector with a contant value of 1
+        features = np.ones((len(g.nodes) , 1))        # initialise the feature vector with a contant value of 1
 
         #Adding degree as a feature
         degree = (g.degree())     # compute node degrees
         nx.set_node_attributes(g , dict(degree) , "degree")     # Add the new features using nx.set_node_attributes(graph , feature: dict({node:value}) , name_of_feature: str)
         degree_ = get_values_sorted_by_keys(dict(degree))
         degree_ = np.reshape((degree_) , newshape=(-1,1))
-        feature_vector = np.append(feature_vector , degree_ , axis=1)
+        features = np.append(features , degree_ , axis=1)
 
 
         # Eigenvector Centrality
@@ -295,41 +216,35 @@ class DBLP_dataset(Dataset):
         nx.set_node_attributes(g, e_centrality, "centrality")    # Add feature to graph
         e_centrality_ = get_values_sorted_by_keys(e_centrality)
         e_centrality_ = np.array((e_centrality_)).reshape((-1,1))        
-        feature_vector = np.append(feature_vector , e_centrality_ , axis=1)     # Adding feature to feature vector
+        features = np.append(features , e_centrality_ , axis=1)     # Adding feature to features list
 
         # Clustering Coefficient
         cc = nx.clustering(g)    # compute clustering coefficients
         nx.set_node_attributes(g, cc, "clustering_coef")    # Add feature to graph
         cc_ = get_values_sorted_by_keys(cc)
         cc_ = np.array(cc_).reshape((-1,1))        
-        feature_vector = np.append(feature_vector , cc_ , axis=1)     # Add feature to feature vector
+        features = np.append(features , cc_ , axis=1)     # Add feature to feature list
 
         # Square clustering
         scc = nx.square_clustering(g)    # compute sqaure clustering coefficient
         nx.set_node_attributes(g, scc, "square_clustering_coef")    # Add feature to graph
         scc_ = get_values_sorted_by_keys(scc)
         scc_ = np.array(scc_).reshape((-1,1))        
-        feature_vector = np.append(feature_vector , scc_ , axis=1)     # Add feature to feature vector
+        features = np.append(features , scc_ , axis=1)     # Add feature to feature list
 
-        # One hot encoded node id 
-        # node_ids = np.array((g.nodes))      # compute node ids vector
-        # node_ids_ohe = np.eye(len(node_ids))     # compute ohe
-        # feature_vector = np.append(feature_vector , node_ids_ohe , axis=1)
-
-        return feature_vector , g
+        return features , g
             
     def _get_labels(self, label):
         label = np.asarray([label])
         return torch.tensor(label, dtype=torch.int64)
 
     def len(self):
-        return len(self.processed_file_names)
+        return 1
 
     def get(self, idx):
-        if(self.expt=="edge_sampling"):
-            data = torch.load(os.path.join(self.processed_dir, f'data_es_{idx}.pt'))
-        elif(self.expt == "n_communities"):
-            data = torch.load(os.path.join(self.processed_dir, f'data_nc_{idx}.pt'))
+    
+        processed_file_path = os.path.join(self.processed_dir, self.processed_file_name)
+        data = torch.load(os.path.join(self.processed_dir, f'data_es_{idx}.pt'))
         return data
     
     def get_frequencies(self):
@@ -368,7 +283,7 @@ class DBLP_dataset(Dataset):
 
         return frequencies
     
-    def community_sampling(self , frequencies_file , k = 5 , n_communities = 50):
+    def community_sampling(self , frequencies_file , k = 5 , n_communities = 50 , mode="balancing"):
 
         """
             input: frequencies_file(pd.Dataframe): value:count ("count" number of communities with "value" number of members)
@@ -380,7 +295,6 @@ class DBLP_dataset(Dataset):
 
         f = frequencies_file
 
-        data_file = open(self.raw_paths[1])
         write_file = open(self.root + "/interim/modified_communities.txt", "w")
 
         k = k       # the average number of communties to be selected per frequency count
@@ -389,11 +303,17 @@ class DBLP_dataset(Dataset):
         distribution_list = []      # initialise list of member counts of selected communities
         count = 0       # variable to keep track of number of communities
 
-        for line in data_file:
+        with open(self.raw_paths[1]) as file:
+            lines = file.readlines()
+
+        rd.shuffle(lines)
+
+        for line in lines:
 
             line_elements = [int(x) for x in line.split()]
 
             random = np.random.rand()       # Generate a random number to do random sampling 
+
             # p_select is the probability of selecting community defined in the current line
             # p_select is directly proportional to k and inversely proportional to the number of communities with the same length 
             p_select = (k/(f[f["value"] == len(line_elements)]["count"].iloc[0]))
@@ -401,6 +321,15 @@ class DBLP_dataset(Dataset):
             if(count == n_communities):
                 break
 
+            # random sampling without making classes equal
+            elif(mode == "random"):
+
+                write_file.write(line)      # write the line(community) to "modified_communties.txt" file
+                modified_node_set.update(line_elements)     # add nodes in community to the modified node set
+                distribution_list.append(len(line_elements))        # add number of nodes in distribution_list to plot
+                count+=1
+
+            # frequency based sampling to make distribution balanced
             elif(random <= p_select):       # select communities with probability p_select
 
                 write_file.write(line)      # write the line(community) to "modified_communties.txt" file
@@ -413,7 +342,6 @@ class DBLP_dataset(Dataset):
 
         modified_node_list = np.sort(np.array(list(modified_node_set)))     # convert modified_node_set to np.array and sort
 
-        data_file.close()
         write_file.close()
 
         return modified_node_list

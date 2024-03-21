@@ -1,2 +1,3 @@
-./data/
-./p2_env/
+data/
+p2_env/
+**/.DS_Store

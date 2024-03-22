@@ -24,7 +24,7 @@ class DBLP_dataset(Dataset):
     output: creates processed dataset (data_0.pt) at "root/processed"
     """
 
-    def __init__(self, root, raw_filenames , processed_filename , embedding_dim=16 , retain_edges = 0.5 , n_communities = 200 , transform=None, pre_transform=None):
+    def __init__(self, root, raw_filenames , processed_filename , embedding_dim=16 , retain_edges = 0.5 , n_communities = 200 , sampling_mode = "balanced" , transform=None, pre_transform=None):
         """
             root = Where the dataset should be stored. This folder is split
             into "raw" directory (downloaded dataset) and "processed" directory (processed data)
@@ -35,6 +35,7 @@ class DBLP_dataset(Dataset):
 
 
         self.retain_edges = retain_edges
+        self.sampling_mode = sampling_mode
         self.n_communities = n_communities
         self.embedding_dim = embedding_dim
 
@@ -84,7 +85,7 @@ class DBLP_dataset(Dataset):
 
         f = self.get_frequencies()      # used for sampling value:count ("count" number of communities with "value" number of members)
 
-        sampled_node_list = self.community_sampling(frequencies_file=f , k=self.n_communities//20 , n_communities=self.n_communities)        # subset of nodes that are a part of the sampled communities
+        sampled_node_list = self.community_sampling(frequencies_file=f , k=self.n_communities//20 , n_communities=self.n_communities , mode=self.sampling_mode)        # subset of nodes that are a part of the sampled communities
         embedding_ids = [str(i) for i in range(sampled_node_list.shape[0])]
 
         # labels[i,j] = 1 if node i is a member of community j else 0
@@ -321,7 +322,7 @@ class DBLP_dataset(Dataset):
             if(count == n_communities):
                 break
 
-            # random sampling without making classes equal
+            # random sampling without balancing class frequencies
             elif(mode == "random"):
 
                 write_file.write(line)      # write the line(community) to "modified_communties.txt" file

@@ -7,7 +7,10 @@ This module implements supervised Community Detection on the DBLP dataset ([link
 ## Data
 1. Download the raw data from the mentioned link and save it in "./data/raw" as "graph_edges.txt" and "5000_communities.txt"
 2. Create 2 subfolders "./data/interim" and "./data/processed"
-3. Raw data is processed by the dataloader script at "./src/data/data_loader.py". It currently supports 2 experiments "edge_sampling" and "n_communities".
+3. Raw data is processed by the dataloader script at "./src/data/data_loader.py".
+    This script takes the raw data files "graph_edges.txt" and "5000_communities.txt" in "./data/raw/" as inputs and processes them for the model to use for training and testing. It saves the in processed data at "./data/processed/". The name of the processed file needs to be passed to the dataloader as the argument processed_filename. The file will be saved as "./data/processed/processed_filename". Make sure to use ".pt" extension for the processed filename.
+
+    The processed_filenames currently saved are in the format "data_{n2v_embedding_size}_{number_of_output_communties}_{fraction_of_sampled_edges}.pt"
 
 ## Explorations
 1. Explore the dataset in "./notebooks/data_exploration.ipynb"

@@ -36,6 +36,7 @@ class MLP(torch.nn.Module):
             x = F.dropout(x , p=self.dropout , training=self.training)
 
         x = self.dense_layers[-1](x)
+        x = torch.clip(x , -4 , 4)
         out = self.output(x)
 
         return out
@@ -89,9 +90,8 @@ class GCN(torch.nn.Module):
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
 
-
         x = self.convs[-1](x , edge_index)
-        x = F.tanh(x)
+        x = torch.clip(x , -4 , 4)
         
         if(self.return_embeds):
             out = x

@@ -100,3 +100,39 @@ def get_values_sorted_by_keys(d):
 def save_model(model , path):
 
     torch.save(model.state_dict(), path)
+
+
+# Sorter 
+def sorter(a):
+    return a[1]
+
+# used in test.ipynb
+# converts output matrix to list of communities sorted by the probability of the node being a part of the community
+    
+def create_communities(out_matrix , thresh = 0.5):
+    
+    """
+        input: Output of the model
+        description: Converts o/p of the model to a usable format
+        output: list of communities containing nodes sorted by their probability score (of being a part of the respective community)
+    """
+
+    out_ = out_matrix.to("cpu").detach().numpy()
+
+    tuples = np.where(out_>thresh)
+    scores = np.where(out_>thresh , out_ , -1)
+
+    communities = [[] for i in range(out_.shape[1])]
+
+    for i in range(tuples[0].shape[0]):
+
+        node_id = tuples[0][i]
+        community_id = tuples[1][i]
+
+        communities[community_id].append(np.array([int(node_id) , scores[node_id][community_id]]))
+
+    for i in range(len(communities)):
+        communities[i].sort(key = sorter , reverse=True)
+
+    return (communities)
+    

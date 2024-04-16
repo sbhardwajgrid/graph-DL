@@ -1,7 +1,9 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
-
+from pydantic import BaseModel
+from typing import List
+import networkx as nx
 
 # To calculate accuracy,recall and precision given the confusion matrix
 def acc(c):
@@ -135,4 +137,78 @@ def create_communities(out_matrix , thresh = 0.5):
         communities[i].sort(key = sorter , reverse=True)
 
     return (communities)
+
+def create_nodeinfo(out_matrix , thresh = 0.5):
     
+    """
+        input: Output of the model
+        description: Converts o/p of the model to a usable format
+        output: list[node_id] is a list of communities node_id is a part of
+    """
+
+    out_ = out_matrix.to("cpu").detach().numpy()
+
+    tuples = np.where(out_>thresh)
+    scores = np.where(out_>thresh , out_ , -1)
+
+    nodeinfo = [[] for i in range(out_.shape[0])]
+
+    for i in range(tuples[0].shape[0]):
+
+        node_id = tuples[0][i]
+        community_id = tuples[1][i]
+
+        nodeinfo[node_id].append([int(community_id) , scores[node_id][community_id]])
+
+    for i in range(len(nodeinfo)):
+        nodeinfo[i].sort(key = sorter , reverse=True)
+
+    return nodeinfo
+
+# Response classes for apis
+
+class NodeQueryResponse(BaseModel):
+    node_id: int
+    output: List[List[float]]
+    actual_communities: List[int]
+    new_communities: List[List[float]]
+
+class CommunityQueryResponse(BaseModel):
+    community_id: int
+    community_size: int
+    new_nodes_count: int
+    output_size: int
+    actual_nodes: List[int]
+    new_nodes: List[List[float]]
+
+class NewNodeQueryResponse(BaseModel):
+    new_node_id: int
+    edge_list: List[int]
+    recommended_communities: List[List[float]]
+
+def get_feature_vector(node_id , edge_list , x , g):
+    "computes the feature vector for the new node based on its edge list and the graph structure"
+
+    embedding = np.zeros((21,))
+    for edge in edge_list:
+        embedding += x[edge , :21].numpy()
+    embedding = np.array(embedding)
+    embedding/=len(edge_list)
+    embedding = torch.tensor(embedding , dtype=torch.float32)
+
+    # g.add_node(node_id)
+    # edges = [(node_id , edge) for edge in edge_list]
+    # g.add_edges_from(edges)
+
+    # features = []
+    # # degree, eigenvector centrality, clustering coefficient, square clustering coeff
+    # features.append(g.degree([node_id]))
+    # features.append(nx.eigenvector_centrality(g)[node_id])
+    # features.append(nx.clustering(g)[node_id])
+    # features.append(nx.square_clustering(g)[node_id])
+
+    # features = torch.nn.functional.normalize(torch.tensor(features , dtype=torch.float32) , dim=0)
+    # feature_vector = torch.cat([embedding , features] , dim=1)
+
+
+    return embedding

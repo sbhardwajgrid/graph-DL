@@ -5,6 +5,9 @@ from src.models.models import GCN
 
 from fastapi import FastAPI , HTTPException
 import torch
+from torch_geometric.explain.config import ThresholdConfig
+from torch_geometric.explain import Explainer, GNNExplainer
+
 import networkx as nx
 import numpy as np
 from src.utilities.utils import NodeQueryResponse , CommunityQueryResponse , NewNodeQueryResponse , create_communities , create_nodeinfo , get_feature_vector 
@@ -53,8 +56,35 @@ async def get_node_info(node_id: int):
         else:
             new_communities.append([comm , prob])
 
-    return {"node_id":node_id , "output":node_info[node_id],
-            "actual_communities":actual_communities , "new_communities":new_communities}
+    threshhold_config = ThresholdConfig(threshold_type="topk" , value=10)
+
+    explainer = Explainer(
+        model=loaded_model,
+        algorithm=GNNExplainer(epochs=25),
+        explanation_type='model',
+        node_mask_type='object',
+        edge_mask_type='object',
+        model_config=dict(
+            mode='multiclass_classification',
+            task_level='node',
+            return_type='probs',  # Model returns probabilities.
+        ),
+        threshold_config=threshhold_config
+    )
+
+    
+    # Generate explanation for the node
+    explanation = explainer(data.x, data.edge_index, index=node_id)
+
+    nodes = np.where(explanation.cpu().node_mask>0)
+    values = explanation.node_mask.cpu()[explanation.cpu().node_mask>0]
+    hm_data = np.stack([nodes[0] , values] , axis=1)
+    sorted_indices = np.argsort(hm_data[:, 1])
+    sorted_data = hm_data[sorted_indices[::-1]]
+
+    return {"node_id":node_id , "output_size":len(node_info[node_id]),
+            "actual_communities":actual_communities , "new_communities":new_communities[:10],
+            "explanation":sorted_data.tolist()}
 
 @app.post("/query_community/" , response_model=CommunityQueryResponse)
 async def get_community_info(community_id: int):
@@ -95,20 +125,24 @@ async def get_community_info(community_id: int):
             new_nodes.append([node , prob])
     
     return {"community_id":community_id , "community_size": community_size , "new_nodes_count":len(new_nodes),
-            "output_size":len(communities[community_id]) , "actual_nodes":actual_nodes, "new_nodes":new_nodes[:100]}
+            "output_size":len(communities[community_id]) , "new_nodes":new_nodes[:10]}
 
 @app.post("/query_new_node/" , response_model=NewNodeQueryResponse)
-async def new_node(edge_list: List[int]):
+async def new_node(edge_list: List[float]):
 
     data = torch.load(f"../../data/processed/data_16_200_0.5.pt")
 
     if(len(edge_list) == 0):
-        raise HTTPException(status_code=400, detail=f"Please enter non-empty list!")
+        raise HTTPException(status_code=400, detail=f"Enter non-empty list!")
 
-    for node in edge_list:
+    for i,node in enumerate(edge_list):
+        if(int(node) != node):
+            raise HTTPException(status_code=400, detail=f"Node {node} does not exist")
         if node >= data.x.shape[0] or node<0:
             raise HTTPException(status_code=400, detail=f"Node {node} does not exist")
-
+        
+        edge_list[i] = int(node)
+        
     gcn_args = {
     'device': device,
     'num_layers': 4,
@@ -136,5 +170,30 @@ async def new_node(edge_list: List[int]):
 
     model_output = loaded_model(x , edge_index)
     node_info = create_nodeinfo(model_output , thresh=0.8)
+
+    threshhold_config = ThresholdConfig(threshold_type="topk" , value=10)
+
+    explainer = Explainer(
+        model=loaded_model,
+        algorithm=GNNExplainer(epochs=25),
+        explanation_type='model',
+        node_mask_type='object',
+        edge_mask_type='object',
+        model_config=dict(
+            mode='multiclass_classification',
+            task_level='node',
+            return_type='probs',  # Model returns probabilities.
+        ),
+        threshold_config=threshhold_config
+    )
+
+    explanation = explainer(x, edge_index, index=new_node_id)
+
+    nodes = np.where(explanation.cpu().node_mask>0)
+    values = explanation.node_mask.cpu()[explanation.cpu().node_mask>0]
+    hm_data = np.stack([nodes[0] , values] , axis=1)
+    sorted_indices = np.argsort(hm_data[:, 1])
+    sorted_explanation = hm_data[sorted_indices[::-1]]
     
-    return {"new_node_id":new_node_id , "edge_list":edge_list , "recommended_communities":node_info[new_node_id]}
+    return {"new_node_id":new_node_id , "edge_list":edge_list , "recommended_communities":node_info[new_node_id],
+            "explanation":sorted_explanation}

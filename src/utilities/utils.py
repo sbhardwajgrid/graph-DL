@@ -169,22 +169,23 @@ def create_nodeinfo(out_matrix , thresh = 0.5):
 
 class NodeQueryResponse(BaseModel):
     node_id: int
-    output: List[List[float]]
+    output_size: int
     actual_communities: List[int]
     new_communities: List[List[float]]
+    explanation: List[List[float]]
 
 class CommunityQueryResponse(BaseModel):
     community_id: int
     community_size: int
     new_nodes_count: int
     output_size: int
-    actual_nodes: List[int]
     new_nodes: List[List[float]]
 
 class NewNodeQueryResponse(BaseModel):
     new_node_id: int
     edge_list: List[int]
     recommended_communities: List[List[float]]
+    explanation: List[List[float]]
 
 def get_feature_vector(node_id , edge_list , x , g):
     "computes the feature vector for the new node based on its edge list and the graph structure"

@@ -1,6 +1,12 @@
 # Deep Learning for Graph Commmunity Detection
 This module implements supervised Community Detection on the DBLP dataset ([link](https://snap.stanford.edu/data/com-DBLP.html))
 
+## APIs and XAI 
+1. Code for XAI is at "./notebooks/xai.ipynb"
+2. Code for APIs is at "./src/api/main.py"
+    run command "uvicorn main:app --port 8000" from directory "./src/api" to test apis using swagger ui for fast api
+3. Report for project 3: "./reports/APIs_XAI_report.pdf"
+
 ## Setup:
 1. Run setup.py or run command "pip install -r requirements.txt"
 
